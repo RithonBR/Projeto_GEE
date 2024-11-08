@@ -1,0 +1,86 @@
+// Limpa a interface padrão para organizar o layout
+ui.root.clear();
+
+// Define o layout principal para uma disposição vertical
+ui.root.setLayout(ui.Panel.Layout.flow('vertical'));
+
+// Criar um painel para a interface de usuário
+var panel = ui.Panel({
+  layout: ui.Panel.Layout.flow('vertical'),
+  style: {width: '300px'}
+});
+
+// Títulos e descrições
+panel.add(ui.Label('Cole o conteúdo do arquivo GeoJSON com os Nomes das Imagens'));
+
+// Criando uma caixa de texto para inserir o conteúdo do arquivo GeoJSON
+var geojsonTextbox = ui.Textbox({
+  placeholder: 'Cole o conteúdo do seu arquivo GeoJSON aqui...',
+  style: {width: '300px', height: '150px'}
+});
+
+// Adiciona a caixa de texto ao painel
+panel.add(geojsonTextbox);
+
+// Botão para processar o conteúdo do GeoJSON
+var processButton = ui.Button('Processar GeoJSON', function() {
+  try {
+    // Converte o texto do GeoJSON para um objeto JSON
+    var geojson = JSON.parse(geojsonTextbox.getValue());
+
+    // Extrai os nomes das imagens do GeoJSON
+    var imageNames = geojson.features.map(function(feature) {
+      return feature.properties.image_name;
+    });
+
+    // Passa os nomes das imagens para a função de busca
+    searchAndExportImages(imageNames);
+  } catch (error) {
+    print('Erro ao processar o GeoJSON:', error);
+  }
+});
+
+// Adiciona o botão de processar ao painel
+panel.add(processButton);
+
+// Função para buscar as imagens e exportá-las
+var searchAndExportImages = function(imageNames) {
+  imageNames.forEach(function(imageName) {
+    // Busca a imagem na coleção Sentinel-2 usando o 'system:index'
+    var image = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+      .filter(ee.Filter.eq('system:index', imageName))  // Filtro pelo índice da imagem
+      .first(); // Obtém a primeira imagem que corresponde ao índice
+
+    // Se a imagem for encontrada, exporta para o Google Drive
+    if (image) {
+      exportImage(image, imageName);
+    } else {
+      print('Imagem não encontrada:', imageName);
+    }
+  });
+};
+
+// Função para exportar a imagem
+var exportImage = function(img, imageName) {
+  // Definir nome do arquivo de exportação
+  var outputName = 'Sentinel_' + imageName;
+
+  print('Exportando:', outputName);
+
+  // Exporta a imagem para o Google Drive
+  Export.image.toDrive({
+    image: img,
+    description: outputName,
+    fileNamePrefix: outputName,
+    scale: 10,  // Resolução de 10 metros
+    crs: 'EPSG:4326',
+    maxPixels: 1e10,
+    fileFormat: 'GeoTIFF',
+    formatOptions: {
+      cloudOptimized: true
+    }
+  });
+};
+
+// Adiciona o painel à esquerda e o mapa ao lado direito
+ui.root.widgets().reset([panel, ui.Map()]);
