@@ -1,0 +1,133 @@
+// Limpa a interface padrão para organizar o layout
+ui.root.clear();
+
+// Define o layout principal para uma disposição vertical
+ui.root.setLayout(ui.Panel.Layout.flow('vertical'));
+
+// Criar um painel para a interface de usuário
+var panel = ui.Panel({
+  layout: ui.Panel.Layout.flow('vertical'),
+  style: {width: '300px'}
+});
+
+// Títulos e descrições
+panel.add(ui.Label('Selecione a Geometria e os Filtros para Obter Imagens de Sentinel-2'));
+
+// Adicionando o campo de WKT
+var wktLabel = ui.Label('Insira a geometria em WKT (ex: polígono)');
+var wktTextbox = ui.Textbox({
+  placeholder: 'Insira o WKT aqui...',
+  style: {width: '200px'}
+});
+panel.add(wktLabel);
+panel.add(wktTextbox);
+
+// Adicionando os campos para selecionar as datas (dia, mês, ano)
+// Painel para a Data de Início
+var startDateLabel = ui.Label('Selecione a Data de Início');
+var startYear = ui.Textbox({value: '2020', placeholder: 'Ano', style: {width: '60px'}});
+var startMonth = ui.Textbox({value: '1', placeholder: 'Mês', style: {width: '60px'}});
+var startDay = ui.Textbox({value: '1', placeholder: 'Dia', style: {width: '60px'}});
+
+// Painel para as datas de início (layout horizontal para o label e os campos de data)
+var startDatePanel = ui.Panel({
+  widgets: [startDateLabel, 
+            ui.Panel({
+              widgets: [startYear, startMonth, startDay],
+              layout: ui.Panel.Layout.flow('horizontal'),  // Layout horizontal para os campos
+              style: {stretch: 'horizontal'}
+            })],
+  layout: ui.Panel.Layout.flow('vertical'),  // Layout vertical para o label e o painel de data
+  style: {stretch: 'horizontal'}
+});
+panel.add(startDatePanel);
+
+// Adicionando os campos para selecionar as datas (dia, mês, ano) para o final
+var endDateLabel = ui.Label('Selecione a Data de Fim');
+
+// Painel para as datas de fim (layout horizontal para os campos de ano, mês e dia)
+var endYear = ui.Textbox({value: '2024', placeholder: 'Ano', style: {width: '60px'}});
+var endMonth = ui.Textbox({value: '12', placeholder: 'Mês', style: {width: '60px'}});
+var endDay = ui.Textbox({value: '31', placeholder: 'Dia', style: {width: '60px'}});
+
+// Painel para a data de fim (layout vertical para o label e horizontal para os campos de data)
+var endDatePanel = ui.Panel({
+  widgets: [endDateLabel, 
+            ui.Panel({
+              widgets: [endYear, endMonth, endDay],
+              layout: ui.Panel.Layout.flow('horizontal'),  // Layout horizontal para os campos
+              style: {stretch: 'horizontal'}
+            })],
+  layout: ui.Panel.Layout.flow('vertical'),  // Layout vertical para o label e o painel de data
+  style: {stretch: 'horizontal'}
+});
+panel.add(endDatePanel);
+
+// Botão para executar o processamento
+var runButton = ui.Button('Executar', function() {
+  // Obtém o WKT fornecido pelo usuário
+  var wkt = wktTextbox.getValue();
+  
+  // Corrige para GeoJSON válido
+  var geojson = JSON.parse(wkt); // Converte o WKT para um objeto JSON
+  
+  // Usando ee.Geometry para criar a geometria
+  var AOI = ee.Geometry(geojson); // Cria a geometria a partir do GeoJSON
+  
+  // Obtém as datas de início e de fim a partir dos inputs
+  var start = ee.Date.fromYMD(
+    parseInt(startYear.getValue(), 10), 
+    parseInt(startMonth.getValue(), 10), 
+    parseInt(startDay.getValue(), 10)
+  );
+  var end = ee.Date.fromYMD(
+    parseInt(endYear.getValue(), 10), 
+    parseInt(endMonth.getValue(), 10), 
+    parseInt(endDay.getValue(), 10)
+  );
+
+  // Filtra imagens e retorna os nomes das imagens com menos nuvem possível
+  getImageNames(AOI, start, end);
+});
+
+// Adiciona o botão "Executar" ao painel principal
+panel.add(runButton);
+
+// Função para obter os nomes das imagens com menos nuvem possível
+var getImageNames = function(AOI, startDate, endDate) {
+  // Filtra a coleção de imagens do Sentinel-2
+  var collection = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+    .filterBounds(AOI)
+    .filterDate(startDate, endDate)
+    .filter(ee.Filter.lte('CLOUDY_PIXEL_PERCENTAGE', 30)) // Limita a 30% de nuvem
+    .sort('CLOUDY_PIXEL_PERCENTAGE'); // Ordena pela menor cobertura de nuvem
+  
+  // Cria uma lista de nomes das imagens
+  var imageNames = collection.aggregate_array('system:index');
+  
+  // Exibe os nomes das imagens
+  imageNames.evaluate(function(names) {
+    if (names.length > 0) {
+      print('Imagens encontradas:', names);
+      
+      // Cria uma tabela de resultados
+      var table = ee.FeatureCollection(names.map(function(name) {
+        return ee.Feature(null, {'image_name': name});
+      }));
+
+      // Exporta a tabela para o Google Drive como JSON
+      Export.table.toDrive({
+        collection: table,
+        description: 'Imagens_Sentinel_Nomes',
+        fileFormat: 'GeoJSON'
+      });
+
+      print('Arquivo JSON exportado com sucesso!');
+    } else {
+      print('Nenhuma imagem encontrada para a área selecionada.');
+    }
+  });
+};
+
+// Adiciona o painel à esquerda e o mapa ao lado direito
+ui.root.widgets().reset([panel, ui.Map()]);
