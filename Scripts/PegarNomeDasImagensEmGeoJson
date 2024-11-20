@@ -96,14 +96,14 @@ panel.add(runButton);
 // Função para obter os nomes das imagens com menos nuvem possível
 var getImageNames = function(AOI, startDate, endDate) {
   // Filtra a coleção de imagens do Sentinel-2
-  var collection = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+  var collection = ee.ImageCollection('COPERNICUS/S2_HARMONIZED')
     .filterBounds(AOI)
     .filterDate(startDate, endDate)
     .filter(ee.Filter.lte('CLOUDY_PIXEL_PERCENTAGE', 30)) // Limita a 30% de nuvem
     .sort('CLOUDY_PIXEL_PERCENTAGE'); // Ordena pela menor cobertura de nuvem
   
   // Cria uma lista de nomes das imagens
-  var imageNames = collection.aggregate_array('system:index');
+  var imageNames = collection.aggregate_array('system:id');
   
   // Exibe os nomes das imagens
   imageNames.evaluate(function(names) {

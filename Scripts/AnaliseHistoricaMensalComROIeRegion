@@ -94,6 +94,7 @@ var runButton = ui.Button('Executar', function() {
 });
 panel.add(runButton);
 
+
 // Função para obter a melhor imagem de um mês específico
 var getBestImage = function(year, month, AOI) {
   var startMonthDate = ee.Date.fromYMD(year, month, 1);
@@ -107,11 +108,8 @@ var getBestImage = function(year, month, AOI) {
     .first(); 
 
   if (img) {
-    var b2b3b4b8 = img.select(['B4', 'B3', 'B2', 'B8']);
-    var b11 = img.select(['B11']).resample('bilinear').reproject({
-      crs: b2b3b4b8.projection(),
-      scale: 10
-    });
+    var b2b3b4b8 = img.select(['B4', 'B3', 'B2', 'B8']).toUint16();
+    var b11 = img.select(['B11']).toUint16();  // Converte para Uint16 para consistência
     img = b2b3b4b8.addBands(b11);
   }
   return img;
