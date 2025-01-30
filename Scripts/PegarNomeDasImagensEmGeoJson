@@ -93,7 +93,6 @@ var runButton = ui.Button('Executar', function() {
     parseInt(endDay.getValue(), 10)
   );
 
-  // Filtra imagens e retorna os nomes das imagens com menos nuvem possível
   getImageNames(AOI, start, end);
 });
 
