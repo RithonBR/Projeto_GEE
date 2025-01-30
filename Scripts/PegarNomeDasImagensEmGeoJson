@@ -1,3 +1,4 @@
+
 // Limpa a interface padrão para organizar o layout
 ui.root.clear();
 
@@ -63,16 +64,22 @@ var endDatePanel = ui.Panel({
 });
 panel.add(endDatePanel);
 
+// Painel à direita para o botão de download
+var rightPanel = ui.Panel({
+  layout: ui.Panel.Layout.flow('vertical'),
+  style: {width: '300px'}
+});
+
 // Botão para executar o processamento
 var runButton = ui.Button('Executar', function() {
   // Obtém o WKT fornecido pelo usuário
   var wkt = wktTextbox.getValue();
   
-  // Corrige para GeoJSON válido
-  var geojson = JSON.parse(wkt); // Converte o WKT para um objeto JSON
+  // Converte o WKT para GeoJSON
+  var geojson = JSON.parse(wkt);
   
   // Usando ee.Geometry para criar a geometria
-  var AOI = ee.Geometry(geojson); // Cria a geometria a partir do GeoJSON
+  var AOI = ee.Geometry(geojson);
   
   // Obtém as datas de início e de fim a partir dos inputs
   var start = ee.Date.fromYMD(
@@ -115,19 +122,25 @@ var getImageNames = function(AOI, startDate, endDate) {
         return ee.Feature(null, {'image_name': name});
       }));
 
-      // Exporta a tabela para o Google Drive como JSON
-      Export.table.toDrive({
-        collection: table,
-        description: 'Imagens_Sentinel_Nomes',
-        fileFormat: 'GeoJSON'
+      // Função para baixar o arquivo JSON
+      var downloadButton = ui.Button('Baixar JSON', function() {
+        Export.table.toDrive({
+          collection: table,
+          description: 'Imagens_Sentinel_Nomes',
+          fileFormat: 'GeoJSON'
+        });
+
+        print('Arquivo JSON exportado com sucesso!');
       });
 
-      print('Arquivo JSON exportado com sucesso!');
+      // Adiciona o botão de download ao painel direito
+      rightPanel.clear();
+      rightPanel.add(downloadButton);
     } else {
       print('Nenhuma imagem encontrada para a área selecionada.');
     }
   });
 };
 
-// Adiciona o painel à esquerda e o mapa ao lado direito
-ui.root.widgets().reset([panel, ui.Map()]);
+// Adiciona os painéis à interface principal
+ui.root.widgets().reset([panel, rightPanel]);
