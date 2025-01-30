@@ -1,0 +1,215 @@
+//{"coordinates":[[[[-47.924850288634,-23.10219335028908],[-47.921500323034245,-23.09424539268967],[-47.92051503903431,-23.09434392108966],[-47.919562597834386,-23.09424539268967],[-47.918905741834436,-23.09411402148968],[-47.91752634423454,-23.09362137948971],[-47.91486607743472,-23.0924061958898],[-47.91335530863484,-23.091880711089843],[-47.91095778423503,-23.09230766748981],[-47.91000534303509,-23.0923733530898],[-47.91026808543508,-23.092734623889775],[-47.91072788463504,-23.092964523489762],[-47.911450426234985,-23.093457165489724],[-47.91138474063498,-23.094015493089685],[-47.91105631263501,-23.09424539268967],[-47.9098411290351,-23.094508135089647],[-47.909151430235156,-23.094409606689652],[-47.90839604583521,-23.094015493089685],[-47.90964407223512,-23.101142380689158],[-47.9085274170352,-23.101306594689145],[-47.908757316635175,-23.10209482188909],[-47.9099068146351,-23.105411944688846],[-47.91089209863503,-23.10748104108869],[-47.91200875383495,-23.108630539088605],[-47.913322465834845,-23.108630539088605],[-47.91621263223463,-23.10830211108863],[-47.91815035743449,-23.10830211108863],[-47.91969396903437,-23.108630539088605],[-47.92189443663421,-23.10948445188854],[-47.92186159383422,-23.107579569488685],[-47.924850288634,-23.10219335028908]]]],"type":"MultiPolygon"}
+
+// Limpa a interface padrão para organizar o layout
+ui.root.clear();
+
+// Define o layout principal para uma disposição horizontal
+ui.root.setLayout(ui.Panel.Layout.flow('horizontal'));
+
+// Cria o painel para a interface de usuário à esquerda
+var leftPanel = ui.Panel({
+  layout: ui.Panel.Layout.flow('vertical'),
+  style: {width: '300px'}
+});
+
+// Cria o painel de visualização à direita para as miniaturas
+var rightPanel = ui.Panel({
+  layout: ui.Panel.Layout.flow('vertical'),
+  style: {width: '700px'}
+});
+
+
+// Títulos e descrições
+leftPanel.add(ui.Label('Selecione a Geometria e as Datas para Exportar Imagens de Sentinel-2'));
+
+// Adicionando o campo de WKT
+var wktLabel = ui.Label('Insira a geometria em JSON (ex: use o plugin wkt qgis)');
+var wktTextbox = ui.Textbox({
+  placeholder: 'Insira o JSON aqui...',
+  style: {width: '200px'}
+});
+leftPanel.add(wktLabel);
+leftPanel.add(wktTextbox);
+
+// Campos para selecionar datas (dia, mês, ano)
+var startDateLabel = ui.Label('Data de Início');
+var startYear = ui.Textbox({value: '2024', placeholder: 'Ano', style: {width: '60px'}});
+var startMonth = ui.Textbox({value: '10', placeholder: 'Mês', style: {width: '60px'}});
+var startDay = ui.Textbox({value: '1', placeholder: 'Dia', style: {width: '60px'}});
+var startDatePanel = ui.Panel([
+  startDateLabel, 
+  ui.Panel([startYear, startMonth, startDay], ui.Panel.Layout.flow('horizontal'))
+], ui.Panel.Layout.flow('vertical'));
+leftPanel.add(startDatePanel);
+
+var endDateLabel = ui.Label('Data de Fim');
+var endYear = ui.Textbox({value: '2025', placeholder: 'Ano', style: {width: '60px'}});
+var endMonth = ui.Textbox({value: '12', placeholder: 'Mês', style: {width: '60px'}});
+var endDay = ui.Textbox({value: '31', placeholder: 'Dia', style: {width: '60px'}});
+var endDatePanel = ui.Panel([
+  endDateLabel, 
+  ui.Panel([endYear, endMonth, endDay], ui.Panel.Layout.flow('horizontal'))
+], ui.Panel.Layout.flow('vertical'));
+leftPanel.add(endDatePanel);
+
+// Botão para executar o processamento
+var runButton = ui.Button('Executar', function() {
+  rightPanel.clear();
+  Map.layers().reset([]);
+  rightPanel.add(ui.Label('Imagens Encontradas'));
+  try {
+    // Converte o WKT para um objeto JSON
+    var wkt = wktTextbox.getValue();
+    var geojson = JSON.parse(wkt);
+    var originalGeometry = ee.Geometry(geojson);  // Geometria original sem buffer
+    var AOI = originalGeometry.buffer(100);       // AOI com buffer de 100 m para busca de imagens
+    // Adiciona o contorno da geometria original ao mapa em amarelo
+    Map.centerObject(originalGeometry);
+    Map.addLayer(originalGeometry, {color: 'yellow'}, 'Área de Interesse Original');
+
+    // Define as datas de início e fim
+    var startDate = ee.Date.fromYMD(
+      parseInt(startYear.getValue(), 10), 
+      parseInt(startMonth.getValue(), 10), 
+      parseInt(startDay.getValue(), 10)
+    );
+    var endDate = ee.Date.fromYMD(
+      parseInt(endYear.getValue(), 10), 
+      parseInt(endMonth.getValue(), 10), 
+      parseInt(endDay.getValue(), 10)
+    );
+
+    // Função para obter e exportar imagens
+    exportImages(AOI, startDate, endDate, originalGeometry);
+  } catch (error) {
+    print('Erro ao processar os inputs:', error);
+  }
+});
+leftPanel.add(runButton);
+
+// Função para visualização com stretch otimizado
+function visual(image, geometry, bands, scale, stretch) {
+  var minMax = image.select(bands).reduceRegion({
+    reducer: ee.Reducer.percentile(stretch),
+    scale: scale,
+    geometry: geometry,
+    bestEffort: true
+  });
+  
+  return ee.Image(bands.map(function(band) {
+    var imageBand = image.select(band);
+    var min = ee.Number(minMax.get(band + '_p' + Math.round(stretch[0])));
+    var max = ee.Number(minMax.get(band + '_p' + Math.round(stretch[1])));
+    return imageBand.unitScale(min, max).rename(band);
+  })).visualize({min: 0, max: 1, bands: bands});
+}
+
+// Função para buscar, exportar nomes e mostrar miniaturas
+var exportImages = function(AOI, startDate, endDate, originalGeometry) {
+  var collection = ee.ImageCollection('COPERNICUS/S2_HARMONIZED')
+    .filterBounds(AOI)
+    .filterDate(startDate, endDate)
+    .sort('system:time_start'); // Ordena as imagens por data
+
+  // Exporta a lista de nomes e cria miniaturas
+  var imageNames = collection.aggregate_array('system:id');
+  imageNames.evaluate(function(names) {
+    if (names && names.length > 0) { // Verifica se names não é undefined e possui elementos
+      print('Nomes das imagens encontradas:', names);
+      var table = ee.FeatureCollection(names.map(function(name) {
+        return ee.Feature(null, {'image_name': name});
+      }));
+      Export.table.toDrive({
+        collection: table,
+        description: 'NomesDasImagens_Sentinel_2',
+        fileFormat: 'GeoJSON'
+      });
+      
+      // Adiciona as miniaturas ao painel direito
+      names.forEach(function(name) {
+        var image = collection.filter(ee.Filter.eq('system:id', name)).first();
+        displayThumbnail(image, name, AOI, originalGeometry);
+        exportImage(image, name);
+      });
+    } else {
+      print('Nenhuma imagem encontrada para o período e a área selecionados.');
+    }
+  });
+};
+
+// Função para exibir duas miniaturas no painel direito
+var displayThumbnail = function(img, imageName, AOI, originalGeometry) {
+  if (img) {
+    // Remove "COPERNICUS/" e substitui '/' por '_'
+    var outputName = imageName.replace('COPERNICUS/', '').replace(/\//g, '_');
+    
+    // Visualização em RGB (B4, B3, B2)
+    var rgbImage = img.visualize({bands: ['B4', 'B3', 'B2'], min: 0, max: 3000});
+    
+    // Visualização em combinação das bandas B8, B11, B4
+    var bandCombinationImage = img.visualize({bands: ['B8', 'B11', 'B4'], min: 0, max: 6000, gamma: 1.5});
+    
+    var stretchImage = visual(img, AOI, ['B8', 'B11', 'B4'], 10, [2, 98]);
+    
+    // Cria o contorno em amarelo para ambas as visualizações
+    var contour = ee.Image().paint(originalGeometry, 1, 2).visualize({palette: ['yellow'], opacity: 1});
+    
+    // Mescla a imagem RGB com o contorno
+    var rgbThumbnailImage = rgbImage.blend(contour);
+    
+    // Mescla a imagem de combinação de bandas com o contorno
+    var bandCombinationThumbnailImage = bandCombinationImage.blend(contour);
+    
+    var stretchThumbnailImage = stretchImage.blend(contour);
+    
+    // Cria as miniaturas para ambas as visualizações
+    var rgbThumbnail = ui.Thumbnail({
+      image: rgbThumbnailImage,
+      params: {dimensions: '200x200', region: AOI},
+      style: {margin: '10px'}
+    });
+    
+    var bandCombinationThumbnail = ui.Thumbnail({
+      image: bandCombinationThumbnailImage,
+      params: {dimensions: '200x200', region: AOI},
+      style: {margin: '10px'}
+    });
+    
+    var stretchThumbnail = ui.Thumbnail({
+      image: stretchThumbnailImage, 
+      params: {dimensions: '200x200', region: AOI}, 
+      style: {margin: '10px'}});
+    
+    // Cria um painel horizontal para alinhar as duas miniaturas
+    var thumbnailPanel = ui.Panel([rgbThumbnail, bandCombinationThumbnail, stretchThumbnail], ui.Panel.Layout.flow('horizontal'));
+    
+    // Adiciona o nome e as miniaturas ao painel direito
+    rightPanel.add(ui.Label(outputName));
+    rightPanel.add(thumbnailPanel);
+  }
+};
+
+// Função para exportar uma imagem individual com nome formatado
+var exportImage = function(img, imageName) {
+  if (img) {
+    // Remove "COPERNICUS/" e substitui '/' por '_'
+    var outputName = imageName.replace('COPERNICUS/', '').replace(/\//g, '_');
+    
+    Export.image.toDrive({
+      image: img,
+      description: outputName,
+      fileNamePrefix: outputName,
+      region: img.geometry(),
+      scale: 10,
+      crs: 'EPSG:4326',
+      maxPixels: 1e10,
+      fileFormat: 'GeoTIFF',
+      formatOptions: { cloudOptimized: true }
+    });
+    
+    print('Exportando imagem:', outputName);
+  }
+};
+
+// Adiciona o painel esquerdo, o mapa e o painel direito à interface
+ui.root.widgets().reset([leftPanel, ui.Map(), rightPanel]);
