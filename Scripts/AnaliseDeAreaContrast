@@ -1,0 +1,117 @@
+// Limpa a interface padrão para organizar o layout
+ui.root.clear();
+
+// Define o layout principal para uma disposição horizontal
+ui.root.setLayout(ui.Panel.Layout.flow('horizontal'));
+
+// Cria o painel para a interface de usuário à esquerda
+var leftPanel = ui.Panel({
+  layout: ui.Panel.Layout.flow('vertical'),
+  style: {width: '300px'}
+});
+
+// Cria o painel de visualização à direita para as miniaturas
+var rightPanel = ui.Panel({
+  layout: ui.Panel.Layout.flow('vertical'),
+  style: {width: '1000px'}
+});
+
+// Títulos e descrições
+leftPanel.add(ui.Label('Selecione a Geometria e as Datas para Exportar Imagens de Sentinel-2'));
+
+// Adicionando o campo de WKT
+var wktLabel = ui.Label('Insira a geometria em JSON (ex: use o plugin wkt qgis)');
+var wktTextbox = ui.Textbox({
+  placeholder: 'Insira o JSON aqui...',
+  style: {width: '200px'}
+});
+leftPanel.add(wktLabel);
+leftPanel.add(wktTextbox);
+
+// Campos para selecionar datas
+var startDateLabel = ui.Label('Data de Início');
+var startDate = ui.Textbox({value: '2024-10-01', placeholder: 'AAAA-MM-DD', style: {width: '120px'}});
+leftPanel.add(startDateLabel);
+leftPanel.add(startDate);
+
+var endDateLabel = ui.Label('Data de Fim');
+var endDate = ui.Textbox({value: '2025-12-31', placeholder: 'AAAA-MM-DD', style: {width: '120px'}});
+leftPanel.add(endDateLabel);
+leftPanel.add(endDate);
+
+// Botão para executar o processamento
+var runButton = ui.Button('Executar', function() {
+  rightPanel.clear();
+  Map.layers().reset([]);
+  rightPanel.add(ui.Label('Imagens Encontradas'));
+  try {
+    var wkt = wktTextbox.getValue();
+    var geojson = JSON.parse(wkt);
+    var originalGeometry = ee.Geometry(geojson);
+    var AOI = originalGeometry.buffer(100);
+    
+    Map.centerObject(originalGeometry);
+    Map.addLayer(originalGeometry, {color: 'yellow'}, 'Área de Interesse Original');
+
+    var collection = ee.ImageCollection('COPERNICUS/S2_HARMONIZED')
+      .filterBounds(AOI)
+      .filterDate(startDate.getValue(), endDate.getValue())
+      .sort('system:time_start');
+
+    var imageNames = collection.aggregate_array('system:id');
+    imageNames.evaluate(function(names) {
+      if (names && names.length > 0) {
+        print('Nomes das imagens encontradas:', names);
+        names.forEach(function(name) {
+          var image = collection.filter(ee.Filter.eq('system:id', name)).first();
+          displayThumbnail(image, name, AOI, originalGeometry);
+        });
+      } else {
+        print('Nenhuma imagem encontrada para o período e a área selecionados.');
+      }
+    });
+  } catch (error) {
+    print('Erro ao processar os inputs:', error);
+  }
+});
+leftPanel.add(runButton);
+
+// Função para visualização com stretch otimizado
+function visual(image, geometry, bands, scale, stretch) {
+  var minMax = image.select(bands).reduceRegion({
+    reducer: ee.Reducer.percentile(stretch),
+    scale: scale,
+    geometry: geometry,
+    bestEffort: true
+  });
+  
+  return ee.Image(bands.map(function(band) {
+    var imageBand = image.select(band);
+    var min = ee.Number(minMax.get(band + '_p' + Math.round(stretch[0])));
+    var max = ee.Number(minMax.get(band + '_p' + Math.round(stretch[1])));
+    return imageBand.unitScale(min, max).rename(band);
+  })).visualize({min: 0, max: 1, bands: bands});
+}
+
+// Função para exibir miniaturas
+var displayThumbnail = function(img, imageName, AOI, originalGeometry) {
+  if (img) {
+    var outputName = imageName.replace('COPERNICUS/', '').replace(/\//g, '_');
+    var rgbImage = img.visualize({bands: ['B4', 'B3', 'B2'], min: 0, max: 3000});
+    var stretchImage = visual(img, AOI, ['B8', 'B11', 'B4'], 10, [2, 98]);
+    
+    var contour = ee.Image().paint(originalGeometry, 1, 2).visualize({palette: ['yellow'], opacity: 1});
+    var rgbThumbnailImage = rgbImage.blend(contour);
+    var stretchThumbnailImage = stretchImage.blend(contour);
+    
+    var rgbThumbnail = ui.Thumbnail({image: rgbThumbnailImage, params: {dimensions: '200x200', region: AOI}, style: {margin: '10px'}});
+    var stretchThumbnail = ui.Thumbnail({image: stretchThumbnailImage, params: {dimensions: '200x200', region: AOI}, style: {margin: '10px'}});
+    
+    var thumbnailPanel = ui.Panel([rgbThumbnail, stretchThumbnail], ui.Panel.Layout.flow('horizontal'));
+    rightPanel.add(ui.Label(outputName));
+    rightPanel.add(thumbnailPanel);
+  }
+};
+
+// Adiciona os painéis à interface
+ui.root.widgets().reset([leftPanel, ui.Map(), rightPanel]);
