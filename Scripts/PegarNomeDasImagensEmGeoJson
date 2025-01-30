@@ -106,8 +106,7 @@ var getImageNames = function(AOI, startDate, endDate) {
   var collection = ee.ImageCollection('COPERNICUS/S2_HARMONIZED')
     .filterBounds(AOI)
     .filterDate(startDate, endDate)
-    .filter(ee.Filter.lte('CLOUDY_PIXEL_PERCENTAGE', 30)) // Limita a 30% de nuvem
-    .sort('CLOUDY_PIXEL_PERCENTAGE'); // Ordena pela menor cobertura de nuvem
+    .sort('system:time_start'); 
   
   // Cria uma lista de nomes das imagens
   var imageNames = collection.aggregate_array('system:id');
@@ -130,7 +129,7 @@ var getImageNames = function(AOI, startDate, endDate) {
           fileFormat: 'GeoJSON'
         });
 
-        print('Arquivo JSON exportado com sucesso!');
+        print('Arquivo JSON para baixar nas tasks!');
       });
 
       // Adiciona o botão de download ao painel direito
