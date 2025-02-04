@@ -15,7 +15,7 @@ var leftPanel = ui.Panel({
 // Cria o painel de visualização à direita para as miniaturas
 var rightPanel = ui.Panel({
   layout: ui.Panel.Layout.flow('vertical'),
-  style: {width: '700px'}
+  style: {width: '900px'}
 });
 
 
@@ -56,7 +56,12 @@ leftPanel.add(endDatePanel);
 var runButton = ui.Button('Executar', function() {
   rightPanel.clear();
   Map.layers().reset([]);
-  rightPanel.add(ui.Label('Imagens Encontradas'));
+  
+  rightPanel.add(ui.Label({
+  value: 'Imagens Encontradas',
+  style: {fontSize: '24px', fontWeight: 'bold'}
+}));
+
   try {
     // Converte o WKT para um objeto JSON
     var wkt = wktTextbox.getValue();
@@ -87,13 +92,13 @@ var runButton = ui.Button('Executar', function() {
 });
 leftPanel.add(runButton);
 
-// Função para visualização com stretch otimizado
-function visual(image, geometry, bands, scale, stretch) {
+// Função corrigida para aplicar stretch na imagem inteira
+function visual(image, bands, stretch) {
   var minMax = image.select(bands).reduceRegion({
     reducer: ee.Reducer.percentile(stretch),
-    scale: scale,
-    geometry: geometry,
-    bestEffort: true
+    scale: 10,
+    bestEffort: true,
+    maxPixels: 1e13
   });
   
   return ee.Image(bands.map(function(band) {
@@ -149,7 +154,7 @@ var displayThumbnail = function(img, imageName, AOI, originalGeometry) {
     // Visualização em combinação das bandas B8, B11, B4
     var bandCombinationImage = img.visualize({bands: ['B8', 'B11', 'B4'], min: 0, max: 6000, gamma: 1.5});
     
-    var stretchImage = visual(img, AOI, ['B8', 'B11', 'B4'], 10, [2, 98]);
+    var stretchImage = visual(img, ['B8', 'B11', 'B4'], [5, 90]);
     
     // Cria o contorno em amarelo para ambas as visualizações
     var contour = ee.Image().paint(originalGeometry, 1, 2).visualize({palette: ['yellow'], opacity: 1});
@@ -176,8 +181,9 @@ var displayThumbnail = function(img, imageName, AOI, originalGeometry) {
     });
     
     var stretchThumbnail = ui.Thumbnail({
-      image: stretchThumbnailImage, 
-      params: {dimensions: '200x200', region: AOI}, 
+      image: stretchThumbnailImage,
+      params: {dimensions: '200x200',
+      region: AOI}, 
       style: {margin: '10px'}});
     
     // Cria um painel horizontal para alinhar as duas miniaturas
