@@ -1,87 +1,66 @@
-
-// Limpa a interface padrão para organizar o layout
+// Limpa a interface padrão
 ui.root.clear();
-
-// Define o layout principal para uma disposição vertical
 ui.root.setLayout(ui.Panel.Layout.flow('vertical'));
 
-// Criar um painel para a interface de usuário
+// Painel principal
 var panel = ui.Panel({
   layout: ui.Panel.Layout.flow('vertical'),
   style: {width: '300px'}
 });
 
-// Títulos e descrições
-panel.add(ui.Label('Selecione a Geometria e os Filtros para Obter Imagens de Sentinel-2'));
+// Título
+panel.add(ui.Label('Selecione a Geometria e os Filtros para Obter Imagens Sentinel-2'));
 
-// Adicionando o campo de WKT
-var wktLabel = ui.Label('Insira a geometria em WKT (ex: polígono)');
-var wktTextbox = ui.Textbox({
-  placeholder: 'Insira o WKT aqui...',
-  style: {width: '200px'}
+// Campo GeoJSON (MultiPolygon)
+var geojsonLabel = ui.Label('Insira a geometria no formato GeoJSON (tipo MultiPolygon)');
+var geojsonTextbox = ui.Textbox({
+  placeholder: 'Cole aqui o GeoJSON...',
+  style: {width: '280px'}
 });
-panel.add(wktLabel);
-panel.add(wktTextbox);
+panel.add(geojsonLabel);
+panel.add(geojsonTextbox);
 
-// Adicionando os campos para selecionar as datas (dia, mês, ano)
-// Painel para a Data de Início
-var startDateLabel = ui.Label('Selecione a Data de Início');
+// Datas
 var startYear = ui.Textbox({value: '2020', placeholder: 'Ano', style: {width: '60px'}});
 var startMonth = ui.Textbox({value: '1', placeholder: 'Mês', style: {width: '60px'}});
 var startDay = ui.Textbox({value: '1', placeholder: 'Dia', style: {width: '60px'}});
-
-// Painel para as datas de início (layout horizontal para o label e os campos de data)
 var startDatePanel = ui.Panel({
-  widgets: [startDateLabel, 
-            ui.Panel({
-              widgets: [startYear, startMonth, startDay],
-              layout: ui.Panel.Layout.flow('horizontal'),  // Layout horizontal para os campos
-              style: {stretch: 'horizontal'}
-            })],
-  layout: ui.Panel.Layout.flow('vertical'),  // Layout vertical para o label e o painel de data
-  style: {stretch: 'horizontal'}
+  widgets: [
+    ui.Label('Data de Início'),
+    ui.Panel([startYear, startMonth, startDay], ui.Panel.Layout.flow('horizontal'))
+  ],
+  layout: ui.Panel.Layout.flow('vertical')
 });
 panel.add(startDatePanel);
 
-// Adicionando os campos para selecionar as datas (dia, mês, ano) para o final
-var endDateLabel = ui.Label('Selecione a Data de Fim');
-
-// Painel para as datas de fim (layout horizontal para os campos de ano, mês e dia)
 var endYear = ui.Textbox({value: '2024', placeholder: 'Ano', style: {width: '60px'}});
 var endMonth = ui.Textbox({value: '12', placeholder: 'Mês', style: {width: '60px'}});
 var endDay = ui.Textbox({value: '31', placeholder: 'Dia', style: {width: '60px'}});
-
-// Painel para a data de fim (layout vertical para o label e horizontal para os campos de data)
 var endDatePanel = ui.Panel({
-  widgets: [endDateLabel, 
-            ui.Panel({
-              widgets: [endYear, endMonth, endDay],
-              layout: ui.Panel.Layout.flow('horizontal'),  // Layout horizontal para os campos
-              style: {stretch: 'horizontal'}
-            })],
-  layout: ui.Panel.Layout.flow('vertical'),  // Layout vertical para o label e o painel de data
-  style: {stretch: 'horizontal'}
+  widgets: [
+    ui.Label('Data de Fim'),
+    ui.Panel([endYear, endMonth, endDay], ui.Panel.Layout.flow('horizontal'))
+  ],
+  layout: ui.Panel.Layout.flow('vertical')
 });
 panel.add(endDatePanel);
 
-// Painel à direita para o botão de download
-var rightPanel = ui.Panel({
-  layout: ui.Panel.Layout.flow('vertical'),
-  style: {width: '300px'}
-});
-
-// Botão para executar o processamento
+// Botão Executar
 var runButton = ui.Button('Executar', function() {
-  // Obtém o WKT fornecido pelo usuário
-  var wkt = wktTextbox.getValue();
-  
-  // Converte o WKT para GeoJSON
-  var geojson = JSON.parse(wkt);
-  
-  // Usando ee.Geometry para criar a geometria
-  var AOI = ee.Geometry(geojson);
-  
-  // Obtém as datas de início e de fim a partir dos inputs
+  var geojson = geojsonTextbox.getValue();
+  if (!geojson) {
+    print('⚠️ Por favor, insira a geometria GeoJSON.');
+    return;
+  }
+
+  var AOI;
+  try {
+    AOI = ee.Geometry(JSON.parse(geojson));
+  } catch (e) {
+    print('❌ Erro ao interpretar o GeoJSON. Verifique se está bem formatado.');
+    return;
+  }
+
   var start = ee.Date.fromYMD(
     parseInt(startYear.getValue(), 10), 
     parseInt(startMonth.getValue(), 10), 
@@ -95,50 +74,39 @@ var runButton = ui.Button('Executar', function() {
 
   getImageNames(AOI, start, end);
 });
-
-// Adiciona o botão "Executar" ao painel principal
 panel.add(runButton);
 
-// Função para obter os nomes das imagens com menos nuvem possível
-var getImageNames = function(AOI, startDate, endDate) {
-  // Filtra a coleção de imagens do Sentinel-2
+// Função para obter os nomes das imagens e exportar direto
+function getImageNames(AOI, startDate, endDate) {
   var collection = ee.ImageCollection('COPERNICUS/S2_HARMONIZED')
     .filterBounds(AOI)
     .filterDate(startDate, endDate)
-    .sort('system:time_start'); 
-  
-  // Cria uma lista de nomes das imagens
+    .sort('system:time_start');
+
   var imageNames = collection.aggregate_array('system:id');
-  
-  // Exibe os nomes das imagens
+
   imageNames.evaluate(function(names) {
     if (names.length > 0) {
-      print('Imagens encontradas:', names);
-      
-      // Cria uma tabela de resultados
+      print('✅ Imagens encontradas:', names);
+
       var table = ee.FeatureCollection(names.map(function(name) {
         return ee.Feature(null, {'image_name': name});
       }));
 
-      // Função para baixar o arquivo JSON
-      var downloadButton = ui.Button('Baixar JSON', function() {
-        Export.table.toDrive({
-          collection: table,
-          description: 'Imagens_Sentinel_Nomes',
-          fileFormat: 'GeoJSON'
-        });
-
-        print('Arquivo JSON para baixar nas tasks!');
+      // Exportação direta para aba "Tasks"
+      Export.table.toDrive({
+        collection: table,
+        description: 'Imagens_Sentinel_Nomes',
+        fileFormat: 'GeoJSON',
+        folder: 'GEE_Export'
       });
 
-      // Adiciona o botão de download ao painel direito
-      rightPanel.clear();
-      rightPanel.add(downloadButton);
+      print('📁 Exportação enviada automaticamente para a aba "Tasks".');
     } else {
-      print('Nenhuma imagem encontrada para a área selecionada.');
+      print('⚠️ Nenhuma imagem encontrada para a área selecionada.');
     }
   });
-};
+}
 
-// Adiciona os painéis à interface principal
-ui.root.widgets().reset([panel, rightPanel]);
+// Mostra a interface
+ui.root.widgets().reset([panel]);
