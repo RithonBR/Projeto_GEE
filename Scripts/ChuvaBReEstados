@@ -1,0 +1,140 @@
+// 1. Interface com 3 colunas: Controles | Mapa | Legenda
+ui.root.clear();
+ui.root.setLayout(ui.Panel.Layout.flow('horizontal'));
+
+// Painel esquerdo - Controles
+var controlPanel = ui.Panel({style: {width: '300px', padding: '10px'}});
+ui.root.add(controlPanel);
+
+// Painel central - Mapa
+var map = ui.Map();
+map.setControlVisibility({all: false, zoomControl: true});
+map.style().set('cursor', 'crosshair');
+map.setCenter(-54, -14, 4);  // Centraliza Brasil inicialmente
+ui.root.add(map);
+
+// Painel direito - Legenda
+var legendaPanel = ui.Panel({
+  style: {width: '200px', padding: '10px', backgroundColor: 'rgba(255,255,255,0.95)'}
+});
+ui.root.add(legendaPanel);
+
+// Paleta e intervalos
+var palette = [
+  '#ffffff', '#fff8b0', '#ffff00', '#ffd280', '#ff9900',
+  '#d0f0c0', '#66cc66', '#006400', '#cceeff', '#3399ff',
+  '#8298F0', '#9335F0', '#1300F0','#2F21C5','#302E46', '#808080'
+];
+
+var intervalos = [
+  '0–50','50–100','100–150','150–200','200–250',
+  '250–300','300–400','400–500','500–600','600–700','700–800',
+  '800–900','900–1000','1000–1200','>1200'
+];
+
+// Legenda
+legendaPanel.add(ui.Label({value: 'Legenda (mm)', style: {fontWeight: 'bold'}}));
+intervalos.forEach(function(label, i) {
+  var linha = ui.Panel({layout: ui.Panel.Layout.Flow('horizontal'), style: {margin: '2px 0'}});
+  linha.add(ui.Label({
+    style: {
+      backgroundColor: palette[i],
+      padding: '8px',
+      margin: '0 4px 0 0',
+      border: '1px solid #555',
+      width: '20px'
+    }
+  }));
+  linha.add(ui.Label(label));
+  legendaPanel.add(linha);
+});
+
+// Controles
+controlPanel.add(ui.Label('Selecione o Estado ou "Brasil"'));
+var estadosNames = ['Brasil'].concat(estadosBrasil.aggregate_array('NM_UF').getInfo().sort());
+
+var estadoSelect = ui.Select({
+  items: estadosNames,
+  placeholder: 'Estado...',
+  onChange: function(estado) {
+    if (estado === 'Brasil') {
+      map.setCenter(-54, -14, 4);
+    } else {
+      var estGeom = estadosBrasil.filter(ee.Filter.eq('NM_UF', estado)).geometry();
+      map.centerObject(estGeom, 6);
+    }
+  }
+});
+controlPanel.add(estadoSelect);
+
+controlPanel.add(ui.Label('Data Inicial (YYYY-MM-DD)'));
+var startDateInput = ui.Textbox('2025-01-01');
+controlPanel.add(startDateInput);
+
+controlPanel.add(ui.Label('Data Final (YYYY-MM-DD)'));
+var endDateInput = ui.Textbox('2025-03-31');
+controlPanel.add(endDateInput);
+
+var statusLabel = ui.Label('', {color: 'blue', fontWeight: 'bold'});
+controlPanel.add(statusLabel);
+
+var runButton = ui.Button('Gerar Mapa', function() {
+  map.clear();
+  statusLabel.setValue('🔄 Carregando...');
+
+  var estado = estadoSelect.getValue();
+  if (!estado) {
+    statusLabel.setValue('⚠️ Selecione um estado ou "Brasil"');
+    return;
+  }
+
+  var dataInicial = ee.Date(startDateInput.getValue());
+  var dataFinal = ee.Date(endDateInput.getValue());
+
+  var regiao = estado === 'Brasil'
+    ? estadosBrasil.union().geometry()
+    : estadosBrasil.filter(ee.Filter.eq('NM_UF', estado)).geometry();
+
+  var dataset = ee.ImageCollection('UCSB-CHG/CHIRPS/DAILY')
+    .filterDate(dataInicial, dataFinal)
+    .filterBounds(regiao)
+    .select('precipitation');
+
+  var precipitacao = dataset.sum().clip(regiao);
+
+  var classified = precipitacao.expression(
+    "precipitation <= 50 ? 1" +
+    ": precipitation <= 100 ? 2" +
+    ": precipitation <= 150 ? 3" +
+    ": precipitation <= 200 ? 4" +
+    ": precipitation <= 250 ? 5" +
+    ": precipitation <= 300 ? 6" +
+    ": precipitation <= 400 ? 7" +
+    ": precipitation <= 500 ? 8" +
+    ": precipitation <= 600 ? 9" +
+    ": precipitation <= 700 ? 10" +
+    ": precipitation <= 800 ? 11" +
+    ": precipitation <= 900 ? 12" +
+    ": precipitation <= 1000 ? 13" +
+    ": precipitation <= 1200 ? 14" +
+    ": 15", {
+    precipitation: precipitacao
+  });
+
+  classified = classified.clip(regiao);
+
+  map.addLayer(classified, {min: 1, max: 16, palette: palette}, 'Precipitação Classificada');
+
+  Export.image.toDrive({
+    image: classified,
+    description: 'CHIRPS_Precip_Class_' + estado.replace(' ', '_'),
+    folder: 'GEE_Exports',
+    region: regiao,
+    scale: 5000,
+    maxPixels: 1e13
+  });
+
+  statusLabel.setValue('✅ Mapa carregando e esta no campo tasks(se for brasil vai esperar)');
+});
+
+controlPanel.add(runButton);
