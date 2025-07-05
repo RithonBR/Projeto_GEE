@@ -1,0 +1,187 @@
+// Limpa interface e mapa
+ui.root.clear();
+Map.clear();
+
+// Cria o mapa e armazena na variável
+var map = ui.Map();
+
+// Painel de controle esquerdo
+var panel = ui.Panel({
+  layout: ui.Panel.Layout.flow('vertical'),
+  style: {width: '300px'}
+});
+panel.add(ui.Label({
+  value: 'Selecione o Período para a Exportação de Imagens',
+  style: {fontWeight: 'bold', fontSize: '16px'}
+}));
+
+// Anos início/fim
+var startYear = ui.Textbox({placeholder: 'Ano de Início', style: {width: '100px'}});
+var endYear = ui.Textbox({placeholder: 'Ano de Fim', style: {width: '100px'}});
+var yearPanel = ui.Panel({
+  widgets: [startYear, ui.Label(' '), endYear],
+  layout: ui.Panel.Layout.flow('horizontal'),
+  style: {stretch: 'horizontal'}
+});
+panel.add(yearPanel);
+
+// Meses com checkboxes
+var months = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 
+              'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+var monthCheckboxes = {};
+months.forEach(function(month) {
+  monthCheckboxes[month] = ui.Checkbox(month, false);
+  panel.add(monthCheckboxes[month]);
+});
+
+// Botões Marcar / Desmarcar todos
+function marcarTodos() {
+  months.forEach(function(month) {
+    monthCheckboxes[month].setValue(true);
+  });
+}
+function desmarcarTodos() {
+  months.forEach(function(month) {
+    monthCheckboxes[month].setValue(false);
+  });
+}
+var marcarTodosButton = ui.Button('Marcar Todos', marcarTodos);
+var desmarcarTodosButton = ui.Button('Desmarcar Todos', desmarcarTodos);
+var buttonPanel = ui.Panel({
+  widgets: [marcarTodosButton, ui.Label(' '), desmarcarTodosButton],
+  layout: ui.Panel.Layout.flow('horizontal'),
+  style: {stretch: 'horizontal'}
+});
+panel.add(buttonPanel);
+
+// Entrada GeoJSON
+var geojsonLabel = ui.Label('Insira a geometria GeoJSON (ex: MultiPolygon)');
+var geojsonTextbox = ui.Textbox({
+  placeholder: 'Insira o GeoJSON aqui...',
+  style: {width: '280px'}
+});
+panel.add(geojsonLabel);
+panel.add(geojsonTextbox);
+
+// Painel para thumbnails (direito)
+var thumbPanel = ui.Panel({
+  layout: ui.Panel.Layout.flow('vertical'),
+  style: {width: '400px', padding: '10px', maxHeight: '600px'}
+});
+thumbPanel.add(ui.Label({
+  value: 'Pré-visualização das imagens selecionadas:',
+  style: {fontWeight: 'bold', fontSize: '16px'}
+}));
+
+// Função para obter a melhor imagem Sentinel-2 para mês e ano
+function getBestImage(year, month, geometry) {
+  var startDate = ee.Date.fromYMD(year, month, 1);
+  var endDate = startDate.advance(1, 'month');
+
+  var collection = ee.ImageCollection('COPERNICUS/S2_SR')
+    .filterDate(startDate, endDate)
+    .filterBounds(geometry)
+    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+    .sort('CLOUDY_PIXEL_PERCENTAGE');
+
+  return ee.Image(collection.first()).clip(geometry);
+}
+
+// Função para exportar imagem
+function exportImage(image, year, month, geometry) {
+  var name = 'Sentinel2_' + year + '_' + (month < 10 ? '0' + month : month);
+
+  Export.image.toDrive({
+    image: image.select(['B4', 'B3', 'B2']),
+    description: name,
+    folder: 'GEE_Exports',
+    fileNamePrefix: name,
+    region: geometry,
+    scale: 10,
+    maxPixels: 1e13
+  });
+}
+
+// Função para criar thumbnail clicável usando ui.Thumbnail
+function processImageThumbnail(year, monthIndex, img, AOI) {
+  var visParams = {bands: ['B4', 'B3', 'B2'], min: 0, max: 3000};
+
+  var thumb = ui.Thumbnail({
+    image: img.visualize(visParams),
+    params: {region: AOI.bounds(), dimensions: 300, format: 'png'},
+    style: {margin: '5px', border: '1px solid black'}
+  });
+
+  thumb.onClick(function() {
+    map.centerObject(AOI, 12);
+    map.addLayer(img, visParams, 'Imagem ' + year + '/' + monthIndex, true, 1);
+  });
+
+  var label = ui.Label('Sentinel-2: ' + year + '/' + (monthIndex < 10 ? '0' + monthIndex : monthIndex));
+  var thumbEntry = ui.Panel({
+    widgets: [label, thumb],
+    layout: ui.Panel.Layout.flow('vertical'),
+    style: {margin: '10px 0'}
+  });
+
+  thumbPanel.add(thumbEntry);
+
+  // Exporta imagem
+  exportImage(img, year, monthIndex, AOI);
+}
+
+// Botão executar
+var runButton = ui.Button('Executar', function() {
+  var startY = parseInt(startYear.getValue(), 10);
+  var endY = parseInt(endYear.getValue(), 10);
+  var geojsonText = geojsonTextbox.getValue();
+
+  // Limpa mensagens de erro e thumbnails anteriores
+  panel.widgets().forEach(function(w) {
+    if (w.style && w.style.color === 'red') panel.remove(w);
+  });
+  thumbPanel.clear();
+  thumbPanel.add(ui.Label({
+    value: 'Pré-visualização das imagens selecionadas:',
+    style: {fontWeight: 'bold', fontSize: '16px'}
+  }));
+
+  if (!geojsonText || isNaN(startY) || isNaN(endY)) {
+    panel.add(ui.Label({
+      value: '⚠️ Preencha corretamente os campos de ano e geometria.',
+      style: {color: 'red', fontWeight: 'bold'}
+    }));
+    return;
+  }
+
+  var AOI;
+  try {
+    var parsed = JSON.parse(geojsonText);
+    AOI = ee.Geometry(parsed);
+    map.layers().reset();
+    map.centerObject(AOI);
+    map.addLayer(AOI, {color: 'red'}, 'Área Selecionada');
+  } catch (e) {
+    panel.add(ui.Label({
+      value: '⚠️ Erro ao processar o GeoJSON. Verifique o formato.',
+      style: {color: 'red', fontWeight: 'bold'}
+    }));
+    return;
+  }
+
+  // Loop de anos e meses selecionados
+  for (var year = startY; year <= endY; year++) {
+    months.forEach(function(month, index) {
+      if (monthCheckboxes[month].getValue()) {
+        var monthIndex = index + 1;
+        var img = getBestImage(year, monthIndex, AOI);
+        processImageThumbnail(year, monthIndex, img, AOI);
+      }
+    });
+  }
+});
+
+panel.add(runButton);
+
+// Organiza painel: controle | mapa | thumbnails
+ui.root.widgets().reset([panel, map, thumbPanel]);
