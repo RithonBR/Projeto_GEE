@@ -1,0 +1,141 @@
+// Interface Gráfica
+var panel = ui.Panel({style: {width: '400px'}});
+ui.root.insert(0, panel);
+
+panel.add(ui.Label({
+  value: 'Melhor Imagem Sentinel-2 por Quinzena',
+  style: {fontSize: '20px', fontWeight: 'bold'}
+}));
+
+panel.add(ui.Label('Insira o nome da órbita/ponto (tile Sentinel-2):'));
+var inputName = ui.Textbox({placeholder: 'Ex: 23LLG', style: {stretch: 'horizontal'}});
+panel.add(inputName);
+
+// Datas
+panel.add(ui.Label('Data inicial (YYYY-MM-DD):')); 
+var startInput = ui.Textbox({placeholder: '2024-10-01', value: '2024-10-01'});
+panel.add(startInput);
+
+panel.add(ui.Label('Data final (YYYY-MM-DD):'));
+var endInput = ui.Textbox({placeholder: '2025-12-31', value: '2025-12-31'});
+panel.add(endInput);
+
+// Botão executar
+var runButton = ui.Button({
+  label: 'Executar',
+  style: {stretch: 'horizontal', backgroundColor: '#4CAF50', color: 'white'},
+  onClick: runProcess
+});
+panel.add(runButton);
+
+// Exportar imagem
+function exportImage(image, filename, originalGeometry) {
+  var bandasExportadas = ['B8', 'B11', 'B4'];
+  image = image.select(bandasExportadas)
+               .multiply(1)
+               .toUint16();
+
+  Map.addLayer(image.clip(originalGeometry), {
+    bands: ['B8', 'B11', 'B4'], min: 0, max: 5000, gamma: 1.4
+  }, filename);
+
+  Export.image.toDrive({
+    image: image.clip(originalGeometry),
+    description: filename,
+    folder: 'GEE_Export',
+    fileNamePrefix: filename,
+    region: originalGeometry,
+    scale: 10,
+    maxPixels: 1e13
+  });
+
+  print('Exportação iniciada: ' + filename);
+}
+
+// Calcular percentual de nuvem na ROI
+function calcularNuvemNaROI(image, roi) {
+  var scl = image.select('SCL');
+  var maskCloud = scl.eq(3).or(scl.eq(8)).or(scl.eq(9)).or(scl.eq(10));
+
+  var totalPixels = scl.clip(roi).reduceRegion({
+    reducer: ee.Reducer.count(),
+    geometry: roi,
+    scale: 10,
+    maxPixels: 1e13
+  }).getNumber('SCL');
+
+  var cloudPixels = scl.updateMask(maskCloud).clip(roi).reduceRegion({
+    reducer: ee.Reducer.count(),
+    geometry: roi,
+    scale: 10,
+    maxPixels: 1e13
+  }).getNumber('SCL');
+
+  return cloudPixels.divide(totalPixels).multiply(100);
+}
+
+// Buscar melhor imagem cobrindo completamente a ROI
+function buscarMelhorImagem(dataIni, dataFim, label, ROI) {
+  var colecao = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+    .filterDate(dataIni, dataFim)
+    .filterBounds(ROI.centroid())
+    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 80))
+    .map(function(img) {
+      var nuvem = calcularNuvemNaROI(img, ROI);
+      return img.set('cloud_coverage_roi', nuvem);
+    });
+
+  var melhor = colecao.sort('cloud_coverage_roi').first();
+  melhor = ee.Image(melhor);
+
+  ee.Dictionary({
+    cloudPct: melhor.get('cloud_coverage_roi'),
+    dataImg: melhor.get('system:time_start')
+  }).evaluate(function(info) {
+    var dataFormatada = ee.Date(info.dataImg).format('YYYY-MM-dd').getInfo();
+    var pct = info.cloudPct ? info.cloudPct.toFixed(2).replace('.', '-') : 'N-A';
+    var nomeComNuvem = label.replace(/ /g, '_') + '_' + dataFormatada + '_nuvem_' + pct + 'pct';
+
+    print(label + ' - ' + dataFormatada + ' - ' + pct.replace('-', '.') + '% de nuvem na ROI');
+    exportImage(melhor, nomeComNuvem, ROI);
+  });
+}
+
+// Função principal
+function runProcess() {
+  Map.clear();
+  var nomeTile = inputName.getValue().toUpperCase();
+  if (!nomeTile) {
+    print('Tile Sentinel-2 não especificado.');
+    return;
+  }
+
+  var grid = gridSentinel2
+    .filter(ee.Filter.eq("Name", nomeTile));
+
+  grid = grid.first();
+  var geometry = ee.Feature(grid).geometry();
+
+  Map.centerObject(geometry, 9);
+  Map.addLayer(geometry, {color: 'red'}, 'Tile ' + nomeTile);
+
+  var startDate = ee.Date(startInput.getValue());
+  var endDate = ee.Date(endInput.getValue());
+
+  var diffMeses = endDate.difference(startDate, 'month').round().subtract(1);
+  var mesesLoop = ee.List.sequence(0, diffMeses);
+
+  mesesLoop.getInfo().forEach(function(offset) {
+    var mesInicio = startDate.advance(offset, 'month');
+    var ano = mesInicio.get('year').getInfo();
+    var mes = mesInicio.get('month').getInfo();
+
+    var primeiroDia = ee.Date.fromYMD(ano, mes, 1);
+    var meioMes = ee.Date.fromYMD(ano, mes, 15);
+    var fimMes = primeiroDia.advance(1, 'month').advance(-1, 'day');
+    var dia20 = ee.Date.fromYMD(ano, mes, 20);
+
+    buscarMelhorImagem(primeiroDia, meioMes, ano + '_' + ('0'+mes).slice(-2) + ' -1-15-', geometry);
+    buscarMelhorImagem(dia20, fimMes, ano + '_' + ('0'+mes).slice(-2) + ' -20-fim-', geometry);
+  });
+}
