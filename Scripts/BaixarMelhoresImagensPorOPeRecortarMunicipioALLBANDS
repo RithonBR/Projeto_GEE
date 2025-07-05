@@ -1,0 +1,171 @@
+// Interface Gráfica
+var panel = ui.Panel({style: {width: '400px'}});
+ui.root.clear();
+ui.root.insert(0, panel);
+
+panel.add(ui.Label({
+  value: 'Melhor Imagem Sentinel-2 por Quinzena (Recorte por Município)',
+  style: {fontSize: '20px', fontWeight: 'bold'}
+}));
+
+panel.add(ui.Label('Município (exato, como está em NM_MUN):'));
+var inputMunicipio = ui.Textbox({placeholder: 'Ex: Luís Eduardo Magalhães'});
+panel.add(inputMunicipio);
+
+panel.add(ui.Label('Tile Sentinel-2 (Name):'));
+var inputTile = ui.Textbox({placeholder: 'Ex: 23LLG'});
+panel.add(inputTile);
+
+panel.add(ui.Label('Data inicial (YYYY-MM-DD):')); 
+var startInput = ui.Textbox({placeholder: '2024-10-01', value: '2024-10-01'});
+panel.add(startInput);
+
+panel.add(ui.Label('Data final (YYYY-MM-DD):'));
+var endInput = ui.Textbox({placeholder: '2025-12-31', value: '2025-12-31'});
+panel.add(endInput);
+
+var runButton = ui.Button({
+  label: 'Executar',
+  style: {stretch: 'horizontal', backgroundColor: '#4CAF50', color: 'white'},
+  onClick: runProcess
+});
+panel.add(runButton);
+
+// Exportar imagem (sem índices NDVI, EVI, SAVI)
+function exportImage(image, filename, originalGeometry) {
+  var imgFinal = image.select(['B1','B2','B3','B4','B5','B6','B7','B8','B11']).toFloat();
+
+  Map.addLayer(imgFinal.clip(originalGeometry), {
+    bands: ['B8', 'B11', 'B4'], min: 0, max: 5000, gamma: 1.4
+  }, filename);
+
+  Export.image.toDrive({
+    image: imgFinal.clip(originalGeometry),
+    description: filename,
+    folder: 'GEE_Export',
+    fileNamePrefix: filename,
+    region: originalGeometry,
+    scale: 10,
+    maxPixels: 1e13
+  });
+
+  print('Exportação iniciada: ' + filename);
+}
+
+// Calcular percentual de nuvem na ROI
+function calcularNuvemNaROI(image, roi) {
+  var scl = image.select('SCL');
+  var maskCloud = scl.eq(3).or(scl.eq(8)).or(scl.eq(9)).or(scl.eq(10));
+
+  var totalPixels = scl.reduceRegion({
+    reducer: ee.Reducer.count(),
+    geometry: roi,
+    scale: 10,
+    maxPixels: 1e13
+  }).get('SCL');
+
+  var cloudPixels = scl.updateMask(maskCloud).reduceRegion({
+    reducer: ee.Reducer.count(),
+    geometry: roi,
+    scale: 10,
+    maxPixels: 1e13
+  }).get('SCL');
+
+  return ee.Algorithms.If(
+    ee.Algorithms.IsEqual(totalPixels, null),
+    null,
+    ee.Number(cloudPixels).divide(ee.Number(totalPixels)).multiply(100)
+  );
+}
+
+// Buscar melhor imagem cobrindo o município
+function buscarMelhorImagem(dataIni, dataFim, label, municipioGeom, nomeMun) {
+  var colecao = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+    .filterDate(dataIni, dataFim)
+    .filterBounds(municipioGeom.centroid())
+    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 80))
+    .map(function(img) {
+      var nuvem = calcularNuvemNaROI(img, municipioGeom);
+      return img.set('cloud_coverage_roi', nuvem);
+    });
+
+  var melhor = ee.Image(colecao.sort('cloud_coverage_roi').first());
+
+  ee.Dictionary({
+    cloudPct: melhor.get('cloud_coverage_roi'),
+    dataImg: melhor.get('system:time_start')
+  }).evaluate(function(info) {
+    if (!info || !info.dataImg) {
+      print(label + ' - Nenhuma imagem encontrada.');
+      return;
+    }
+
+    var dataFormatada = ee.Date(info.dataImg).format('YYYY-MM-dd').getInfo();
+    var pct = info.cloudPct && !isNaN(info.cloudPct)
+      ? info.cloudPct.toFixed(2).replace('.', '-')
+      : 'NA';
+
+    var nomeArquivo = nomeMun.replace(/\s+/g, '_').replace(/[^\w-]/g, '') + '_' +
+                      label.replace(/ /g, '_') + '_' + dataFormatada + '_nuvem_' + pct + 'pct';
+
+    print(label + ' - ' + dataFormatada + ' - ' + pct.replace('-', '.') + '% de nuvem na ROI');
+    exportImage(melhor, nomeArquivo, municipioGeom);
+  });
+}
+
+// Função principal
+function runProcess() {
+  Map.clear();
+  
+  var nomeMun = inputMunicipio.getValue().trim();
+  var nomeTile = inputTile.getValue().toUpperCase().trim();
+
+  if (!nomeMun || !nomeTile) {
+    print('⚠️ Preencha corretamente o nome do município e da tile Sentinel-2.');
+    return;
+  }
+
+  var municipio = municipios.filter(ee.Filter.eq('NM_MUN', nomeMun)).first();
+  var tile = gridSentinel2.filter(ee.Filter.eq('Name', nomeTile)).first();
+
+  municipio.evaluate(function(m) {
+    if (m === null) {
+      print('❌ Município não encontrado: ' + nomeMun);
+      return;
+    }
+
+    tile.evaluate(function(t) {
+      if (t === null) {
+        print('❌ Tile Sentinel-2 não encontrada: ' + nomeTile);
+        return;
+      }
+
+      var municipioGeom = ee.Feature(municipio).geometry();
+      var tileGeom = ee.Feature(tile).geometry();
+
+      Map.centerObject(municipioGeom, 9);
+      Map.addLayer(tileGeom, {color: 'red'}, 'Tile: ' + nomeTile);
+      Map.addLayer(municipioGeom, {color: 'blue'}, 'Município: ' + nomeMun);
+
+      var startDate = ee.Date(startInput.getValue());
+      var endDate = ee.Date(endInput.getValue());
+
+      var diffMeses = endDate.difference(startDate, 'month').round().subtract(1);
+      var mesesLoop = ee.List.sequence(0, diffMeses);
+
+      mesesLoop.getInfo().forEach(function(offset) {
+        var mesInicio = startDate.advance(offset, 'month');
+        var ano = mesInicio.get('year').getInfo();
+        var mes = mesInicio.get('month').getInfo();
+
+        var primeiroDia = ee.Date.fromYMD(ano, mes, 1);
+        var meioMes = ee.Date.fromYMD(ano, mes, 15);
+        var fimMes = primeiroDia.advance(1, 'month').advance(-1, 'day');
+        var dia20 = ee.Date.fromYMD(ano, mes, 20);
+
+        buscarMelhorImagem(primeiroDia, meioMes, ano + '_' + ('0'+mes).slice(-2) + '_1a15', municipioGeom, nomeMun);
+        buscarMelhorImagem(dia20, fimMes, ano + '_' + ('0'+mes).slice(-2) + '_20aFim', municipioGeom, nomeMun);
+      });
+    });
+  });
+}
