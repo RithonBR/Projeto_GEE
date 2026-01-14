@@ -1,0 +1,164 @@
+// === 1. Assets ===
+// Substitua com os seus próprios assets no editor do Earth Engine
+// - municipios: asset com geometria dos municípios brasileiros
+// - amostrasPoligono: FeatureCollection com amostras rotuladas por cultura
+
+// === 2. Seleciona município ===
+var nomeMunicipio = 'Luís Eduardo Magalhães';  // Nome do município desejado
+var municipio = municipios.filter(ee.Filter.eq('NM_MUN', nomeMunicipio));  // Filtra pelo nome
+var roi = municipio.geometry();  // Obtém a geometria do município
+
+// === 3. Máscara de nuvens Sentinel-2 ===
+function maskS2clouds(image) {
+  var qa = image.select('QA60');  // Banda de qualidade com informações de nuvem
+  var cloudBitMask = 1 << 10;     // Bit para nuvem
+  var cirrusBitMask = 1 << 11;    // Bit para cirros
+  var mask = qa.bitwiseAnd(cloudBitMask).eq(0)
+                .and(qa.bitwiseAnd(cirrusBitMask).eq(0));  // Máscara que filtra nuvens e cirros
+  return image.updateMask(mask).divide(10000);  // Aplica máscara e normaliza para reflectância
+}
+
+// === 4. Sentinel-2 coleção + estatísticas ===
+var dataInicio = ee.Date('2025-01-01');  // Data inicial da análise
+var dataFim = ee.Date('2025-03-31');     // Data final
+
+// Filtra a coleção Sentinel-2 pela ROI, data e nuvem < 20%
+var s2 = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+  .filterBounds(roi)
+  .filterDate(dataInicio, dataFim)
+  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+  .map(maskS2clouds)  // Aplica máscara de nuvem
+  .select(['B2', 'B3', 'B4', 'B8', 'B11']);  // Seleciona bandas relevantes
+
+// === 5. Índices espectrais por imagem ===
+function addIndices(img) {
+  // Calcula NDVI
+  var ndvi = img.normalizedDifference(['B8', 'B4']).rename('NDVI');
+  
+  // Calcula EVI
+  var evi = img.expression(
+    '2.5 * ((NIR - RED) / (NIR + 6 * RED - 7.5 * BLUE + 1))', {
+      'NIR': img.select('B8'),
+      'RED': img.select('B4'),
+      'BLUE': img.select('B2')
+    }).rename('EVI');
+  
+  // Calcula SAVI
+  var savi = img.expression(
+    '((NIR - RED) / (NIR + RED + 0.5)) * (1.5)', {
+      'NIR': img.select('B8'),
+      'RED': img.select('B4')
+    }).rename('SAVI');
+  
+  // Calcula GCVI
+  var gcvi = img.expression(
+    '(NIR / GREEN) - 1', {
+      'NIR': img.select('B8'),
+      'GREEN': img.select('B3')
+    }).rename('GCVI');
+  
+  // Calcula NDWI (umidade)
+  var ndwi = img.normalizedDifference(['B3', 'B8']).rename('NDWI');
+  
+  // Calcula Simple Ratio
+  var sr = img.select('B8').divide(img.select('B4')).rename('SR');
+  
+  // Retorna imagem com índices adicionados
+  return img.addBands([ndvi, evi, savi, gcvi, ndwi, sr]);
+}
+var withIndices = s2.map(addIndices);  // Aplica índices em toda a coleção
+
+// === 6. Estatísticas temporais ===
+function addSuffix(img, suffix) {
+  var bands = img.bandNames();  // Nomes das bandas
+  var renamed = bands.map(function(b) {
+    return ee.String(b).cat('_' + suffix);  // Adiciona sufixo às bandas
+  });
+  return img.rename(renamed);
+}
+
+// Calcula estatísticas e renomeia bandas com sufixo
+var mean = addSuffix(withIndices.mean(), 'mean');
+var median = addSuffix(withIndices.median(), 'median');
+var min = addSuffix(withIndices.min(), 'min');
+var max = addSuffix(withIndices.max(), 'max');
+
+// === 7. Imagem final para classificação ===
+var image = mean.addBands(median).addBands(min).addBands(max).clip(roi);  // Une tudo e recorta à ROI
+
+// === 8. Converte polígonos em pontos ===
+// Transforma cada polígono de amostra em pontos aleatórios rotulados
+var amostrasPontos = amostrasPoligono.map(function(feature) {
+  var cultura = feature.get('Culturas');  // Obtém rótulo da cultura
+  var pontos = ee.FeatureCollection.randomPoints({
+    region: feature.geometry(),
+    points: 950,  // Número de pontos por polígono
+    seed: 123
+  }).map(function(pt) {
+    return pt.set('Culturas', cultura);  // Atribui rótulo aos pontos
+  });
+  return pontos;
+}).flatten();  // Junta todos os pontos em um único FeatureCollection
+
+// === 9. Amostras de treino e validação ===
+// Cria coluna aleatória para divisão
+var sample = amostrasPontos.randomColumn('random');
+var trainingsample = sample.filter(ee.Filter.lte('random', 0.8));  // 80% treino
+var validationsample = sample.filter(ee.Filter.gt('random', 0.8));  // 20% validação
+
+// Amostragem de valores de pixel para os pontos de treino
+var training = image.sampleRegions({
+  collection: trainingsample,
+ properties: ['Culturas'],
+  scale: 10,
+  tileScale: 4
+});
+
+// === 10. Classificação com Random Forest ===
+var RFclassifier = ee.Classifier.smileRandomForest(300).train({
+  features: training,
+  classProperty: 'Culturas',
+  inputProperties: image.bandNames()
+});
+
+// Classifica toda a imagem com o modelo treinado
+var classified = image.classify(RFclassifier);
+
+
+// === 11. Visualização ===
+// Centraliza o mapa na região
+Map.centerObject(roi, 11);
+
+// Adiciona a camada classificada com cores por classe
+Map.addLayer(classified, {
+  min: 1,
+  max: 5,
+  palette: ['#FFFF00', '#8B4513', '#FFA500', '#ADFF2F', '#006400']
+}, 'Mapa Classificado');
+
+// === 12. Exportação para Google Drive ===
+function exportClassifiedToDrive(image, nomeMunicipio, dataInicio, dataFim) {
+  // Define nome do arquivo com data e município
+  var nomeArquivo = 'RF_Classificacao_' +
+    nomeMunicipio.replace(/\s+/g, '_') + '_' +
+    dataInicio.format('YYYY-MM-dd').getInfo() + '_a_' +
+    dataFim.format('YYYY-MM-dd').getInfo();
+
+  // Configura exportação para o Google Drive
+  Export.image.toDrive({
+    image: image.toInt8(),  // Converte para inteiro
+    description: nomeArquivo,
+    folder: 'GEE_RF',  // Pasta no Drive
+    fileNamePrefix: nomeArquivo,
+    region: roi,
+    scale: 10,
+    maxPixels: 1e13,
+    fileFormat: 'GeoTIFF',
+    formatOptions: {
+      cloudOptimized: true
+    }
+  });
+}
+
+// Chama a função para exportar a imagem classificada
+exportClassifiedToDrive(classified, nomeMunicipio, dataInicio, dataFim);
